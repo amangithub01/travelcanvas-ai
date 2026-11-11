@@ -1,40 +1,23 @@
 import os
-import requests
+from planning import destination_location
+from providers import ProviderUnavailable, local_places
+from search_cache import read_cache, write_cache
 from state import TravelState
 
+
 def food_node(state: TravelState):
-    """Fetches LIVE restaurant data from Google Local via SerpAPI."""
-    destination = state.get("destination", "Tokyo")
-    print(f"🍽️ [Food Agent] Searching for top-rated local eats in {destination}...")
-
-    api_key = os.getenv("SERPAPI_API_KEY")
-    
-    params = {
-        "engine": "google_local",
-        "q": f"best local food and restaurants in {destination}",
-        "hl": "en",
-        "api_key": api_key
-    }
-
+    cached = read_cache(state, "restaurants")
+    if cached is not None:
+        return {"food_recommendations": cached, "warnings": ["Restaurant results were reused from a destination cache. Check the original source timestamps."]}
+    key = os.getenv("SERPAPI_API_KEY")
+    if not key:
+        return {"food_recommendations": [], "warnings": ["Restaurant search unavailable: SerpAPI is not configured."]}
+    city = destination_location(state["destination"])
     try:
-        response = requests.get("https://serpapi.com/search", params=params)
-        data = response.json()
-        
-        local_results = data.get("local_results", [])
-        top_eats = []
-        
-        for place in local_results[:5]:
-            top_eats.append({
-                "name": place.get("title"),
-                "rating": place.get("rating"),
-                "type": place.get("type"),
-                "address": place.get("address")
-            })
-        
-        if top_eats:
-            print(f"✅ Food Agent Found: {len(top_eats)} restaurants.")
-        return {"food_recommendations": top_eats}
-
-    except Exception as e:
-        print(f"❌ Food API Error: {e}")
-        return {"food_recommendations": []}
+        places = local_places(city, "local restaurants", 6)
+        write_cache(state, "restaurants", places)
+        return {"food_recommendations": places, "warnings": [] if places else ["No restaurants were returned for this destination."]}
+    except ProviderUnavailable as error:
+        return {"food_recommendations": [], "warnings": [f"Restaurant search failed. {error} Add your own meal stops."]}
+    except (TypeError, AttributeError):
+        return {"food_recommendations": [], "warnings": ["Restaurant search failed. Add your own meal stops."]}

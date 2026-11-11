@@ -1,321 +1,176 @@
 "use client";
-import React, { useState } from 'react';
-import { Plane, Hotel, Cloud, Calendar, MapPin, Search, Loader2, Navigation, Utensils, Info, Camera, Sparkles, Printer } from 'lucide-react';
-import { planTrip } from '../lib/api';
+
+import Image from "next/image";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { ArrowRight, CalendarBlank, Compass, MapPin, PaperPlaneTilt, Sparkle, WarningCircle } from "@phosphor-icons/react";
+import { planTrip } from "../lib/api";
+import { DESTINATION_CURRENCIES, requestSchema, type TripPlan, type TripRequest } from "../lib/trip";
+import { BentoShowcase, LandingDetails, LandingHero, SampleWorkspace } from "./travel-showcase";
+import { TripLibrary, TripWorkspace } from "./trip-workspace";
 
 const AIRPORTS = [
   "Mumbai (BOM)", "Delhi (DEL)", "Hyderabad (HYD)", "Bengaluru (BLR)", "Chennai (MAA)", "Kolkata (CCU)",
-  "Dubai (DXB)", "New York (JFK)", "London (LHR)", "Paris (CDG)", "Tokyo (HND)", "Singapore (SIN)"
+  "Dubai (DXB)", "New York (JFK)", "London (LHR)", "Paris (CDG)", "Tokyo (HND)", "Singapore (SIN)",
 ];
+const subscribeHydration = () => () => {};
+const clientSnapshot = () => true;
+const serverSnapshot = () => false;
 
-const flightTimes = [
-  { dep: "06:15 AM", arr: "08:30 AM" },
-  { dep: "10:45 AM", arr: "01:00 PM" },
-  { dep: "04:20 PM", arr: "06:35 PM" }
-];
+function TravelTagline() {
+  const ref = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    const words = ref.current?.querySelectorAll("span");
+    if (!words) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      words.forEach(word => word.classList.add("revealed"));
+      return;
+    }
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("revealed");
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { rootMargin: "0px 0px -12% 0px" });
+    words.forEach(word => observer.observe(word));
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <p ref={ref} className="heading-3 travel-tagline">
+      {"Less time planning.".split(" ").map((word, i) => <span key={word} style={{ transitionDelay: `${i * 60}ms` }}>{word} </span>)}<br />
+      {"More room for discovery.".split(" ").map((word, i) => <span key={word} style={{ transitionDelay: `${(i + 3) * 60}ms` }}>{word} </span>)}
+    </p>
+  );
+}
 
-const hotelImages = [
-  "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=150&q=80",
-  "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&w=150&q=80",
-  "https://images.unsplash.com/photo-1445019980597-93fa8acb246c?auto=format&fit=crop&w=150&q=80"
-];
+function LoadingPreview() {
+  return (
+    <section className="loading-preview panel" aria-label="Preparing your travel plan" aria-busy="true">
+      <div className="eyebrow caption-3"><Sparkle size={16} /> Planning in progress</div>
+      <h2 className="heading-5">Your next chapter is taking shape</h2>
+      <p className="body-6 muted" role="status">Checking connected providers and organizing a draft. This can take around a minute. You can cancel without losing the open plan.</p>
+      <div className="skeleton skeleton-title" />
+      {[0, 1, 2].map(i => <div className="skeleton-card" key={i} aria-hidden="true"><div className="skeleton skeleton-label" /><div className="skeleton" /><div className="skeleton skeleton-short" /></div>)}
+    </section>
+  );
+}
+
+type PlannerForm = Omit<TripRequest, "origin" | "destination"> & { origin: string; destination: string };
+
+function initialForm(): PlannerForm {
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() + 30);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 3);
+  return { origin: "", destination: "", start_date: start.toISOString().slice(0, 10), end_date: end.toISOString().slice(0, 10), max_price: 50000, currency: "INR", adults: 1 };
+}
+
+function extractCode(text: string) {
+  const normalized = text.trim();
+  const match = normalized.match(/\(([A-Za-z]{3})\)$/);
+  if (match) return match[1].toUpperCase();
+  const airport = AIRPORTS.find(airport => airport.split(" (")[0].toLowerCase() === normalized.toLowerCase());
+  return airport ? airport.slice(-4, -1) : normalized.toUpperCase();
+}
 
 export default function TravelDashboard() {
+  const hydrated = useSyncExternalStore(subscribeHydration, clientSnapshot, serverSnapshot);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
-  const [formData, setFormData] = useState({
-    origin: '',
-    destination: '',
-    start_date: '2026-05-10',
-    end_date: '2026-05-15',
-    max_price: 5000
-  });
+  const [plan, setPlan] = useState<TripPlan | null>(null);
+  const [error, setError] = useState("");
+  const [pendingRequest, setPendingRequest] = useState<TripRequest | null>(null);
+  const [formData, setFormData] = useState(initialForm);
+  const [currencyNotice, setCurrencyNotice] = useState("");
+  const activeRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => activeRequest.current?.abort(), []);
 
-  const extractCode = (text: string) => {
-    const match = text.match(/\(([A-Z]{3})\)/);
-    return match ? match[1] : text.trim();
-  };
-
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setResult(null);
-
+  const generate = async (request: TripRequest) => {
+    if (activeRequest.current) return;
+    setPendingRequest(null); setLoading(true); setError("");
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    const timeout = window.setTimeout(() => controller.abort("timeout"), 110_000);
     try {
-      const data = await planTrip({
-        ...formData,
-        origin: extractCode(formData.origin),
-        destination: extractCode(formData.destination)
-      });
-      setResult(data);
-    } catch (err) {
-      alert("Error: Ensure your Python backend is running!");
+      const generated = await planTrip(request, controller.signal);
+      if (!controller.signal.aborted) setPlan(generated);
+    } catch (error) {
+      setError(controller.signal.aborted
+        ? controller.signal.reason === "timeout" ? "Planning took too long. Your open plan is unchanged; try again." : "Planning cancelled. Your open plan is unchanged."
+        : error instanceof Error ? error.message : "The backend could not be reached. Check the connection and try again.");
     } finally {
+      window.clearTimeout(timeout);
+      activeRequest.current = null;
       setLoading(false);
     }
   };
 
-  const cleanText = (text: string) => text.replace(/\*/g, '').replace(/#/g, '').trim();
-
-  const parseItinerary = (text: string) => {
-    if (!text) return [];
-    return text.split(/#{3,4}\sDay\s\d+/i).filter(d => d.trim().length > 10);
+  const handleSearch = (event: FormEvent) => {
+    event.preventDefault();
+    const parsed = requestSchema.safeParse({ ...formData, origin: extractCode(formData.origin), destination: extractCode(formData.destination) });
+    if (!parsed.success) { setError("Choose different supported airports, 1 to 6 adults, a positive budget in INR or USD, and a return 1 to 14 nights after departure."); return; }
+    if (parsed.data.start_date < new Date().toISOString().slice(0, 10)) { setError("Departure must be today or later (UTC)."); return; }
+    if (plan) { setPendingRequest(parsed.data); return; }
+    void generate(parsed.data);
   };
-
-  // Triggers the native browser print/save as PDF dialog
-  const handlePrint = () => {
-    window.print();
+  const updatePlan = (updated: TripPlan) => setPlan({ ...updated, updated_at: new Date().toISOString() });
+  const openPlan = (opened: TripPlan) => {
+    activeRequest.current?.abort();
+    setPendingRequest(null); setError(""); setCurrencyNotice(""); setPlan(opened);
+    setFormData({ ...opened.request });
   };
 
   return (
-    // Added print:bg-white to ensure the PDF background is clean
-    <div className="min-h-screen bg-[#F8FAFC] print:bg-white font-sans text-slate-900 selection:bg-blue-500/30 flex flex-col">
-
-      {/* 1. HERO SECTION (Hidden during PDF export to save space/ink) */}
-      <div
-        className="relative w-full pt-6 pb-32 flex flex-col items-center print:hidden"
-        style={{
-          backgroundImage: "url('https://images.unsplash.com/photo-1436491865332-7a61a109cc05?q=80&w=2074&auto=format&fit=crop')",
-          backgroundSize: 'cover',
-          backgroundPosition: 'center'
-        }}
-      >
-        <div className="absolute inset-0 bg-gradient-to-b from-slate-900/80 via-slate-900/50 to-[#F8FAFC]"></div>
-
-        <nav className="relative z-10 w-full px-6 flex justify-between items-center max-w-7xl mx-auto mb-16">
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-500/30">
-              <Plane className="text-white w-6 h-6" />
-            </div>
-            <h1 className="text-2xl font-black tracking-tight text-white">AI Travel Planner</h1>
+    <div className="travel-app">
+      <a className="skip-link button-sm" href="#planner">Skip to trip planner</a>
+      <header className="site-header no-print"><nav className="navigation" aria-label="Main navigation">
+        <a href="#planner" className="brand" aria-label="AI Travel Planner home"><Image src="/logo.svg" alt="" width={40} height={40} /><span className="title-3">AI Travel <span className="brand-secondary">Planner</span></span></a>
+        <a href="#planner" className="nav-current button-sm" aria-current="page"><Compass size={16} />Trip planner</a>
+      </nav></header>
+      <main id="main-content" className="page-shell">
+        <LandingHero /><BentoShowcase />
+        <div className="showcase-heading workspace-section-heading no-print"><div><p className="eyebrow caption-3"><Compass size={16} />The journey workspace</p><h2 className="heading-3">Your ideas, with a little direction.</h2></div><span className="caption-2 muted">Local-first alpha · Save, edit, and share your own plan.</span></div>
+        <div className="workspace">
+          <aside className="planner-sidebar no-print" id="planner" aria-labelledby="planner-heading">
+            <form onSubmit={handleSearch} className="panel planner-form">
+              <div className="form-heading"><div className="icon-tile"><PaperPlaneTilt size={24} weight="duotone" /></div><div><h2 id="planner-heading" className="heading-6">Where are we headed?</h2><p className="caption-2 muted">Start with the details. We&apos;ll connect the dots.</p></div></div>
+              <p className="planner-scope caption-5 muted">1 to 6 adults · One shared room · 1 to 14 nights.<span>Choose from the 12 supported airports below. Confirm the room can accommodate your group.</span></p>
+              <datalist id="airport-list">{AIRPORTS.map(airport => <option key={airport} value={airport} />)}</datalist>
+              <div className="route-fields">
+                <div className="field"><label className="title-4" htmlFor="origin">Flying from</label><div className="input-wrap"><MapPin size={18} /><input id="origin" name="origin" type="text" list="airport-list" placeholder="Mumbai (BOM)" value={formData.origin} onChange={event => setFormData({ ...formData, origin: event.target.value })} required disabled={loading} className="body-5" /></div></div>
+                <div className="field"><label className="title-4" htmlFor="destination">Going to</label><div className="input-wrap"><Compass size={18} /><input id="destination" name="destination" type="text" list="airport-list" placeholder="Delhi (DEL)" value={formData.destination} onChange={event => setFormData({ ...formData, destination: event.target.value })} required disabled={loading} className="body-5" /></div></div>
+              </div>
+              <div className="date-fields">
+                <div className="field"><label className="title-4" htmlFor="departure">Departure</label><div className="input-wrap"><CalendarBlank size={18} /><input id="departure" name="start_date" type="date" min={hydrated ? new Date().toISOString().slice(0, 10) : undefined} value={hydrated ? formData.start_date : ""} onChange={event => setFormData({ ...formData, start_date: event.target.value })} required disabled={loading} className="body-5" /></div></div>
+                <div className="field"><label className="title-4" htmlFor="return">Return</label><div className="input-wrap"><CalendarBlank size={18} /><input id="return" name="end_date" type="date" min={hydrated ? formData.start_date : undefined} value={hydrated ? formData.end_date : ""} onChange={event => setFormData({ ...formData, end_date: event.target.value })} required disabled={loading} className="body-5" /></div></div>
+              </div>
+              <div className="activity-editor-row">
+                <div className="field"><label className="title-4" htmlFor="adults">Adults</label><select id="adults" name="adults" className="alpha-input body-5" value={formData.adults} disabled={loading} onChange={event => setFormData({ ...formData, adults: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6].map(count => <option key={count} value={count}>{count} {count === 1 ? "adult" : "adults"}</option>)}</select></div>
+                <div className="field"><label className="title-4" htmlFor="currency">Budget currency</label><select id="currency" name="currency" className="alpha-input body-5" value={formData.currency} disabled={loading} onChange={event => {
+                  const currency = event.target.value as TripRequest["currency"];
+                  setFormData({ ...formData, currency, max_price: 0 });
+                  setCurrencyNotice(`Budget cleared. Enter a new amount in ${currency}; changing currency does not convert the old amount.`);
+                }}><option value="INR">INR · Rupee</option><option value="USD">USD · Dollar</option></select></div>
+              </div>
+              <div className="field"><label className="title-4" htmlFor="budget">Trip budget<span className="caption-2 muted">{formData.currency} · whole group</span></label><div className="input-wrap"><span className="caption-3">{formData.currency}</span><input id="budget" name="max_price" type="number" step="0.01" min="0.01" max={formData.currency === "INR" ? 100000000 : 1000000} placeholder="Enter group budget" value={formData.max_price || ""} onChange={event => setFormData({ ...formData, max_price: Number(event.target.value) })} required disabled={loading} className="body-5" /></div>
+                {currencyNotice && <p className="caption-2 muted" role="status">{currencyNotice}</p>}
+                <p className="caption-5 muted">Quotes and estimates use {formData.currency}. {DESTINATION_CURRENCIES[extractCode(formData.destination)] ? `Destination comparison: ${DESTINATION_CURRENCIES[extractCode(formData.destination)]}.` : "Choose a destination to set the comparison currency."} Reference conversion uses Frankfurter; card fees and future rates may differ.</p>
+              </div>
+              <div className="request-actions"><button className="primary-button button-md" type="submit" disabled={loading}><span>{loading ? "Building your plan" : "Plan my trip"}</span><ArrowRight size={20} /></button>{loading && <button className="secondary-button button-sm" type="button" onClick={() => activeRequest.current?.abort()}>Cancel planning</button>}</div>
+              <p className="form-footnote caption-5"><Sparkle size={14} />Unknown costs stay unknown, never invented.</p>
+              {pendingRequest && <div className="inline-confirm" role="group" aria-label="Replace open draft"><p className="body-6">A new plan will replace the open draft. Save or export it first if you need to keep it.</p><button className="secondary-button button-sm" type="button" onClick={() => void generate(pendingRequest)}>Replace with new plan</button><button className="secondary-button button-sm" type="button" onClick={() => setPendingRequest(null)}>Keep current draft</button></div>}
+              {error && <div className="error-message body-6" role="alert"><WarningCircle size={20} /><p>{error}</p></div>}
+            </form>
+            <TripLibrary plan={plan} onLoad={openPlan} dirty={!!plan} />
+          </aside>
+          <div className="workspace-content" aria-live="polite">
+            {loading ? <LoadingPreview /> : plan ? <TripWorkspace key={plan.id} plan={plan} onChange={updatePlan} /> : <SampleWorkspace onPrint={() => window.print()} />}
           </div>
-        </nav>
-
-        <div className="relative z-10 text-center px-4 max-w-3xl">
-          <h2 className="text-4xl md:text-6xl font-black text-white mb-6 drop-shadow-lg leading-tight">Design Your Perfect Journey</h2>
-          <p className="text-blue-100 text-lg font-medium drop-shadow-md">Smart itineraries, live weather, and curated stays powered by AI agents.</p>
         </div>
-      </div>
-
-      {/* 2. SEARCH BOX (Hidden during PDF export) */}
-      <div className="flex-grow px-4 md:px-10 relative z-20 -mt-20 print:hidden">
-        <form onSubmit={handleSearch} className="max-w-7xl mx-auto bg-white p-6 md:p-8 rounded-[2rem] shadow-2xl shadow-blue-900/10 border border-slate-100 mb-12 grid grid-cols-1 md:grid-cols-6 gap-6 items-end">
-
-          <datalist id="airport-list">
-            {AIRPORTS.map(airport => <option key={airport} value={airport} />)}
-          </datalist>
-
-          <div className="md:col-span-1">
-            <label className="text-[10px] font-black uppercase text-blue-600 mb-2 block ml-1">From</label>
-            <div className="relative group">
-              <MapPin className="absolute left-3 top-3.5 w-4 h-4 text-slate-400 group-focus-within:text-blue-600 transition-colors" />
-              <input type="text" list="airport-list" placeholder="Mumbai (BOM)" value={formData.origin} onChange={e => setFormData({ ...formData, origin: e.target.value })} required className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-transparent focus:border-blue-200 rounded-2xl focus:bg-white transition-all outline-none font-bold text-slate-700" />
-            </div>
-          </div>
-          <div className="md:col-span-1">
-            <label className="text-[10px] font-black uppercase text-blue-600 mb-2 block ml-1">To</label>
-            <div className="relative group">
-              <Search className="absolute left-3 top-3.5 w-4 h-4 text-slate-400 group-focus-within:text-blue-600 transition-colors" />
-              <input type="text" list="airport-list" placeholder="Dubai (DXB)" value={formData.destination} onChange={e => setFormData({ ...formData, destination: e.target.value })} required className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-transparent focus:border-blue-200 rounded-2xl focus:bg-white transition-all outline-none font-bold text-slate-700" />
-            </div>
-          </div>
-          <div className="md:col-span-1">
-            <label className="text-[10px] font-black uppercase text-blue-600 mb-2 block ml-1">Departure</label>
-            <div className="relative group">
-              <Calendar className="absolute left-3 top-3.5 w-4 h-4 text-slate-400" />
-              <input type="date" value={formData.start_date} onChange={e => setFormData({ ...formData, start_date: e.target.value })} required className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-transparent focus:border-blue-200 rounded-2xl focus:bg-white transition-all outline-none font-bold text-slate-700 text-sm" />
-            </div>
-          </div>
-          <div className="md:col-span-1">
-            <label className="text-[10px] font-black uppercase text-blue-600 mb-2 block ml-1">Return</label>
-            <div className="relative group">
-              <Calendar className="absolute left-3 top-3.5 w-4 h-4 text-slate-400" />
-              <input type="date" value={formData.end_date} onChange={e => setFormData({ ...formData, end_date: e.target.value })} required className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-transparent focus:border-blue-200 rounded-2xl focus:bg-white transition-all outline-none font-bold text-slate-700 text-sm" />
-            </div>
-          </div>
-          <div className="md:col-span-1">
-            <label className="text-[10px] font-black uppercase text-blue-600 mb-2 block ml-1">Budget ($ USD)</label>
-            <div className="relative group">
-              {/* The Dollar Symbol */}
-              <span className="absolute left-4 top-3.5 font-black text-slate-400 group-focus-within:text-blue-600 transition-colors">$</span>
-
-              <input
-                type="number"
-                placeholder="5000"
-                value={formData.max_price}
-                onChange={e => setFormData({ ...formData, max_price: Number(e.target.value) })}
-                required
-                className="w-full pl-8 pr-4 py-3 bg-slate-50 border-2 border-transparent focus:border-blue-200 rounded-2xl focus:bg-white transition-all outline-none font-black text-blue-600"
-              />
-            </div>
-          </div>
-          <button disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-3 rounded-2xl shadow-xl shadow-blue-600/30 hover:-translate-y-1 transition-all flex items-center justify-center gap-2 h-[52px] disabled:opacity-50">
-            {loading ? <Loader2 className="animate-spin w-6 h-6" /> : "Plan Trip"}
-          </button>
-        </form>
-
-        {/* 3. RESULTS SECTION */}
-        {result && (
-          // Added print:flex print:flex-col so the PDF flows neatly downwards
-          <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-10 pb-20 animate-in fade-in slide-in-from-bottom-6 duration-1000 print:flex print:flex-col print:pt-10">
-
-            {/* LEFT: VISUAL TIMELINE */}
-            <div className="lg:col-span-8 space-y-8 print:w-full">
-
-              {/* HEADER & NEW PRINT BUTTON */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                <div className="flex items-center gap-4">
-                  <Navigation className="text-blue-600 w-8 h-8 print:text-black" />
-                  <h2 className="text-3xl font-black text-slate-800 tracking-tight">
-                    {extractCode(formData.destination)} Itinerary
-                  </h2>
-                </div>
-                {/* The Print Button - hides itself when printing! */}
-                <button
-                  onClick={handlePrint}
-                  className="print:hidden flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-2.5 rounded-xl font-bold shadow-md hover:shadow-lg transition-all active:scale-95"
-                >
-                  <Printer className="w-4 h-4" /> Save as PDF
-                </button>
-              </div>
-
-              <div className="relative border-l-4 border-blue-200 print:border-slate-300 ml-6 pl-10 space-y-12">
-                {parseItinerary(result.itinerary).map((content, index) => {
-                  const lines = content.trim().split('\n');
-                  const dayTitle = cleanText(lines[0]);
-                  const dayBody = cleanText(lines.slice(1).join('\n'));
-
-                  return (
-                    // Added print:break-inside-avoid so a day doesn't get cut in half across two pages
-                    <div key={index} className="relative group print:break-inside-avoid">
-                      <div className="absolute -left-[3.4rem] top-0 w-12 h-12 bg-blue-600 print:bg-slate-800 print:border-slate-200 rounded-full border-4 border-white flex items-center justify-center shadow-lg group-hover:scale-110 transition-all duration-300 z-10">
-                        <span className="text-white font-black text-sm">{index + 1}</span>
-                      </div>
-
-                      <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 print:border-slate-300 print:shadow-none hover:-translate-y-2 hover:scale-[1.02] hover:shadow-2xl hover:shadow-blue-900/10 transition-all duration-300">
-                        <h3 className="text-xl font-black text-slate-800 mb-4 flex items-center gap-2">
-                          Day {index + 1} <span className="text-slate-300 font-medium">|</span> {dayTitle}
-                        </h3>
-                        <div className="prose prose-slate max-w-none text-slate-600 leading-relaxed whitespace-pre-wrap font-medium">
-                          {dayBody}
-                        </div>
-
-                        {index % 2 === 1 && result.food && result.food[index] && (
-                          <div className="mt-6 flex items-center gap-4 bg-orange-50/80 print:bg-slate-50 p-4 rounded-2xl border border-orange-100 print:border-slate-200">
-                            <div className="bg-orange-100 print:bg-slate-200 p-3 rounded-xl"><Utensils className="w-5 h-5 text-orange-600 print:text-slate-700" /></div>
-                            <div>
-                              <p className="text-[10px] font-black text-orange-600 print:text-slate-500 uppercase tracking-widest">Local Eats</p>
-                              <p className="font-bold text-slate-800">{result.food[index].name}</p>
-                            </div>
-                          </div>
-                        )}
-
-                        {index % 2 === 0 && result.attractions && result.attractions[index] && (
-                          <div className="mt-6 flex items-center gap-4 bg-purple-50/80 print:bg-slate-50 p-4 rounded-2xl border border-purple-100 print:border-slate-200">
-                            <div className="bg-purple-100 print:bg-slate-200 p-3 rounded-xl"><Camera className="w-5 h-5 text-purple-600 print:text-slate-700" /></div>
-                            <div>
-                              <p className="text-[10px] font-black text-purple-600 print:text-slate-500 uppercase tracking-widest">Must See</p>
-                              <p className="font-bold text-slate-800">{result.attractions[index].name}</p>
-                            </div>
-                          </div>
-                        )}
-
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* RIGHT: SMART INFO SIDEBAR */}
-            <div className="lg:col-span-4 space-y-8 sticky top-10 h-fit print:static print:w-full">
-
-              <div className="bg-gradient-to-br from-blue-500 to-blue-600 print:from-slate-100 print:to-slate-100 text-white print:text-slate-800 p-10 rounded-[2.5rem] shadow-2xl shadow-blue-500/30 print:shadow-none print:border print:border-slate-300 relative overflow-hidden group hover:scale-[1.02] transition-transform duration-300 print:break-inside-avoid">
-                <Cloud className="absolute -right-4 -top-4 w-32 h-32 opacity-20 print:opacity-5 group-hover:scale-110 group-hover:rotate-12 transition-all duration-700 print:text-black" />
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] mb-4 opacity-80 flex items-center gap-2"><Cloud className="w-4 h-4" /> Destination Forecast</h3>
-                <p className="text-4xl lg:text-5xl font-black">{result.weather}</p>
-              </div>
-
-              {/* UPGRADED FLIGHTS */}
-              <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 print:border-slate-300 print:shadow-none hover:shadow-xl transition-all duration-300 print:break-inside-avoid">
-                <h3 className="text-lg font-black flex items-center gap-2 mb-6 text-slate-800"><Plane className="text-orange-500 print:text-slate-800 w-5 h-5" /> Top Flight Options</h3>
-                <div className="space-y-4">
-                  {result.flights && result.flights.length > 0 ? (
-                    result.flights.slice(0, 3).map((f: any, i: number) => (
-                      <div key={i} className="relative p-5 bg-white rounded-2xl border border-slate-100 print:border-slate-200 shadow-sm print:shadow-none hover:border-orange-200 transition-all">
-
-                        {i === 0 && (
-                          <div className="absolute -top-3 -right-2 bg-emerald-500 print:bg-slate-800 text-white text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full shadow-lg print:shadow-none flex items-center gap-1">
-                            <Sparkles className="w-3 h-3" /> Best Value
-                          </div>
-                        )}
-
-                        <div className="flex justify-between items-center mb-4">
-                          <div className="flex items-center gap-3">
-                            <img src={`https://ui-avatars.com/api/?name=${f.airline}&background=f1f5f9&color=0f172a&rounded=true&bold=true`} alt={f.airline} className="w-8 h-8 rounded-full shadow-sm" />
-                            <span className="font-extrabold text-slate-800">{f.airline}</span>
-                          </div>
-                          <span className="text-orange-600 print:text-slate-800 font-black text-xl">${f.price}</span>
-                        </div>
-
-                        <div className="flex items-center justify-between text-xs font-bold text-slate-400">
-                          <span>{flightTimes[i % 3].dep}</span>
-                          <div className="flex-1 flex items-center px-3">
-                            <div className="h-[2px] w-full bg-slate-200 border-dashed border-t-2 border-slate-300"></div>
-                            <Plane className="w-4 h-4 mx-2 text-slate-300 rotate-45 flex-shrink-0" />
-                            <div className="h-[2px] w-full bg-slate-200 border-dashed border-t-2 border-slate-300"></div>
-                          </div>
-                          <span>{flightTimes[i % 3].arr}</span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-slate-500 text-sm font-medium">No flights found for this route.</p>
-                  )}
-                </div>
-              </div>
-
-              {/* UPGRADED HOTELS */}
-              <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 print:border-slate-300 print:shadow-none hover:shadow-xl transition-all duration-300 print:break-inside-avoid">
-                <h3 className="text-lg font-black flex items-center gap-2 mb-6 text-slate-800"><Hotel className="text-emerald-500 print:text-slate-800 w-5 h-5" /> Curated Stays</h3>
-                <div className="space-y-4">
-                  {result.hotels && result.hotels.length > 0 ? (
-                    result.hotels.slice(0, 3).map((h: any, i: number) => (
-                      <div key={i} className="relative p-4 bg-white rounded-2xl border border-slate-100 print:border-slate-200 shadow-sm print:shadow-none flex items-center gap-4">
-
-                        {i === 0 && (
-                          <div className="absolute -top-3 -right-2 bg-orange-500 print:bg-slate-800 text-white text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full shadow-lg print:shadow-none">
-                            Top Pick
-                          </div>
-                        )}
-
-                        <img src={hotelImages[i % 3]} alt="Hotel" className="w-16 h-16 rounded-xl object-cover shadow-sm" />
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex justify-between items-start mb-1">
-                            <span className="font-bold text-slate-800 truncate pr-2">{h.name}</span>
-                          </div>
-                          <div className="flex items-center justify-between mt-2">
-                            <div className="flex items-center gap-1 bg-amber-50 print:bg-slate-100 px-2 py-0.5 rounded-md">
-                              <span className="text-[10px] font-bold text-amber-600 print:text-slate-600">
-                                {h.rating && h.rating > 0 ? `${h.rating} ★` : 'New / Unrated'}
-                              </span>
-                            </div>
-                            <span className="text-emerald-600 print:text-slate-800 font-black text-lg">${h.price}<span className="text-[10px] text-slate-400 font-medium">/nt</span></span>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-slate-500 text-sm font-medium">No hotels found.</p>
-                  )}
-                </div>
-              </div>
-
-            </div>
-          </div>
-        )}
-      </div>
+        <section className="tagline-section no-print" aria-label="Less planning, more discovery"><p className="eyebrow caption-3">Make space for the good parts</p><TravelTagline /></section>
+        <LandingDetails />
+      </main>
+      <footer className="site-footer page-shell caption-5 no-print"><span>AI Travel Planner · A little direction. A world of possibilities.</span><div className="footer-links"><a href="#privacy-note">Your trip data</a><a href="#planning-note">Before booking</a><a href="#planner">Back to planner</a></div></footer>
     </div>
   );
 }

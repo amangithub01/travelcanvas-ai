@@ -6,9 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --experimental-strip-types --test lib/trip.test.mjs"
   },
   "dependencies": {
+    "zod": "^4.1.12",
+    "@phosphor-icons/react": "^2.1.10",
     "lucide-react": "^0.577.0",
     "next": "16.2.0",
     "react": "19.2.4",

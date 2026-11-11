@@ -1,67 +1,43 @@
 import os
-import requests
+from urllib.parse import urlencode
+
+from planning import price_or_none, source
+from providers import ProviderUnavailable, get_json
 from state import TravelState
 
-def flight_node(state: TravelState):
-    """Fetches LIVE flight data scraping Google Flights via SerpAPI."""
-    origin = state.get("origin", "JFK")
-    destination = state.get("destination", "DXB")
-    start_date = state.get("start_date", "2026-04-01")
-    end_date = state.get("end_date", "2026-04-07") # <--- ADDED END DATE
-    
-    print(f"✈️ [Flight Agent] Searching LIVE Google Flights: {origin} to {destination}...")
 
-    # Securely grab the API key from your .env file
+def flight_node(state: TravelState):
+    if state.get("flights_cached"):
+        return {}
     api_key = os.getenv("SERPAPI_API_KEY")
     if not api_key:
-        print("❌ Missing SERPAPI_API_KEY in .env file.")
-        return {"flight_candidates": []}
-
-    # Set up the API request parameters for Google Flights
+        return {"flight_candidates": [], "warnings": ["Flight search unavailable: SerpAPI is not configured."]}
     params = {
-        "engine": "google_flights",
-        "departure_id": origin,
-        "arrival_id": destination,
-        "outbound_date": start_date,
-        "return_date": end_date,      # <--- ADDED RETURN DATE FOR ROUND TRIP
-        "currency": "USD",
-        "hl": "en",
-        "api_key": api_key
+        "engine": "google_flights", "departure_id": state["origin"], "arrival_id": state["destination"],
+        "outbound_date": state["start_date"], "return_date": state["end_date"],
+        "currency": state.get("currency", "USD"), "hl": "en", "adults": state.get("adults", 1), "type": 1, "api_key": api_key,
     }
-
     try:
-        # Make the live API call
-        response = requests.get("https://serpapi.com/search", params=params)
-        data = response.json()
-        
-        # --- NEW DEBUG LINES ---
-        if "error" in data:
-            print(f"🚨 SerpAPI FLIGHT Error: {data['error']}")
-        # -----------------------
-        
-        # Extract the top flights from the 'best_flights' list
-        best_flights = data.get("best_flights", [])
-        
-        live_flights = []
-        for flight in best_flights[:3]: # Grab the top 3 deals
-            # Safely navigate the JSON response
-            airline = flight.get("flights", [{}])[0].get("airline", "Unknown Airline")
-            price = flight.get("price", 0)
-            url = f"https://www.google.com/travel/flights?q=Flights%20from%20{origin}%20to%20{destination}"
-            
-            live_flights.append({
-                "airline": airline,
-                "price": price,
-                "url": url
+        data = get_json("https://serpapi.com/search", params=params)
+        flights = []
+        for index, option in enumerate((data.get("best_flights", []) + data.get("other_flights", []))[:6]):
+            legs = option.get("flights") or []
+            if not legs:
+                continue
+            url = "https://www.google.com/travel/flights?" + urlencode({"q": f"{state['origin']} to {state['destination']} {state['start_date']} return {state['end_date']}"})
+            currency, adults = state.get("currency", "USD"), state.get("adults", 1)
+            evidence = source("Google Flights via SerpAPI", url, f"{state['origin']}:{state['destination']}:{state['start_date']}:{state['end_date']}:{currency}:{adults}:{index}", "quote")
+            flights.append({
+                "id": evidence["id"], "name": legs[0].get("airline") or "Airline not supplied",
+                "price": price_or_none(option.get("price")),
+                "currency": currency,
+                "price_basis": f"Returned round-trip quote for a {adults}-adult search; confirm final group fare with provider",
+                "departure": (legs[0].get("departure_airport") or {}).get("time"),
+                "arrival": (legs[-1].get("arrival_airport") or {}).get("time"),
+                "source": evidence,
             })
-        
-        if live_flights:
-            print(f"✅ Live Flights Found: {len(live_flights)} options.")
-        else:
-            print("⚠️ No live flights found for this route/date.")
-            
-        return {"flight_candidates": live_flights}
-
-    except Exception as e:
-        print(f"❌ API Error: {e}")
-        return {"flight_candidates": []}
+        return {"flight_candidates": flights, "warnings": [] if flights else ["No flight quotes were returned for this route and dates."]}
+    except ProviderUnavailable as error:
+        return {"flight_candidates": [], "warnings": [f"Flight search failed. {error} Other parts of your draft remain available."]}
+    except (TypeError, AttributeError):
+        return {"flight_candidates": [], "warnings": ["Flight search failed. Other parts of your draft remain available."]}

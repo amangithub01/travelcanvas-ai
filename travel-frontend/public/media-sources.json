@@ -1,0 +1,45 @@
+{
+  "video": {
+    "file": "hero-aerial.mp4",
+    "title": "Aerial tour above a cloudy natural landscape",
+    "source": "https://mixkit.co/free-stock-video/aerial-tour-above-a-cloudy-natural-landscape-39708/",
+    "download": "https://assets.mixkit.co/videos/39708/39708-720.mp4",
+    "license": "Mixkit Stock Video Free License",
+    "licenseUrl": "https://mixkit.co/license/#videoFree",
+    "verified": "2026-11-08"
+  },
+  "photographs": [
+    {
+      "file": "hero-landscape.jpg",
+      "source": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=85"
+    },
+    {
+      "file": "budget-clouds.jpg",
+      "source": "https://images.unsplash.com/photo-1513002749550-c59d786b8e6c?auto=format&fit=crop&w=1200&q=80"
+    },
+    {
+      "file": "route-cityscape.jpg",
+      "source": "https://images.unsplash.com/photo-1587474260584-136574528ed5?auto=format&fit=crop&w=1200&q=80"
+    },
+    {
+      "file": "boutique-stay.jpg",
+      "source": "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1000&q=80"
+    },
+    {
+      "file": "delhi-old-city.jpg",
+      "source": "https://unsplash.com/photos/group-of-people-on-concrete-road-between-buildings-oBCc0Hw6LrQ",
+      "photographer": "Aquib Akhter"
+    },
+    {
+      "file": "delhi-humayun.jpg",
+      "source": "https://unsplash.com/photos/humayuns-tomb-in-new-delhi-india-szR2dlnaNHE",
+      "photographer": "Zoshua Colah"
+    },
+    {
+      "file": "delhi-qutub.jpg",
+      "source": "https://unsplash.com/photos/a-very-tall-brick-tower-with-a-clock-on-its-side-_iNKE6kwNxo",
+      "photographer": "Shubham Dhage"
+    }
+  ],
+  "photographLicense": "https://unsplash.com/license"
+}

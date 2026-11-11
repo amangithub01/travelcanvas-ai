@@ -6,3 +6,7 @@ tavily-python
 pydantic
 python-dotenv
 langchain-community
+fastapi
+uvicorn
+requests
+langchain-groq

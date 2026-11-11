@@ -1,89 +1,47 @@
 import os
-import requests
-from state import TravelState
-from langchain_community.llms import Ollama
+from urllib.parse import urlencode
 
-# 1. Connect to your local Gemma model
-local_llm = Ollama(model="gemma:2b")
+from planning import AIRPORTS, destination_location, price_or_none, safe_url, source
+from providers import ProviderUnavailable, get_json
+from state import TravelState
+
 
 def get_city_from_code(airport_code: str) -> str:
-    print(f"\n🧠 [Local AI] Translating: {airport_code}...")
-    # New ultra-strict prompt
-    prompt = f"Return ONLY the city name for airport code {airport_code}. One word only. No sentences. Example: BOM -> Mumbai. Now do: {airport_code} ->"
-    
-    try:
-        city_name = local_llm.invoke(prompt).strip()
-        # If Gemma still gives a sentence, we take only the last word
-        city_name = city_name.split()[-1].replace('.', '') 
-        print(f"🤖 [Local AI] Gemma result: {city_name}\n")
-        return city_name
-    except Exception as e:
-        return airport_code
+    return AIRPORTS[airport_code][0]
+
 
 def search_node(state: TravelState):
-    """Fetches LIVE hotel data scraping Google Hotels via SerpAPI."""
-    destination_code = state.get("destination", "LHR")
-    start_date = state.get("start_date", "2026-04-01")
-    end_date = state.get("end_date", "2026-04-07")
-    
-    print(f"🔍 [Search Agent] Preparing hotel search for code: {destination_code}...")
-
-    # 2. Translate the code to a full city name using Gemma!
-    full_city_name = get_city_from_code(destination_code)
-
-    # Securely grab the API key
+    if state.get("hotels_cached"):
+        return {}
     api_key = os.getenv("SERPAPI_API_KEY")
     if not api_key:
-        print("❌ Missing SERPAPI_API_KEY in .env file.")
-        return {"hotel_candidates": []}
-
-    # Set up the API parameters for Google Hotels
+        return {"hotel_candidates": [], "warnings": ["Hotel search unavailable: SerpAPI is not configured."]}
+    city = get_city_from_code(state["destination"])
     params = {
-        "engine": "google_hotels",
-        "q": full_city_name, # 3. Use the FULL CITY NAME here instead of the code!
-        "check_in_date": start_date,
-        "check_out_date": end_date,
-        "currency": "USD",
-        "hl": "en",
-        "api_key": api_key
+        "engine": "google_hotels", "q": destination_location(state["destination"]), "check_in_date": state["start_date"],
+        "check_out_date": state["end_date"], "currency": state.get("currency", "USD"), "hl": "en",
+        "adults": state.get("adults", 1), "api_key": api_key,
     }
-
     try:
-        # Make the live API call
-        print(f"🌍 [Search Agent] Sending query to Google Hotels: 'Hotels in {full_city_name}'")
-        response = requests.get("https://serpapi.com/search", params=params)
-        data = response.json()
-        
-        # --- NEW DEBUG LINES ---
-        if "error" in data:
-            print(f"🚨 SerpAPI HOTEL Error: {data['error']}")
-        # -----------------------
-        
-        properties = data.get("properties", [])
-        live_hotels = []
-        
-        # Grab the top 4 hotel deals
-        for hotel in properties[:4]:
-            name = hotel.get("name", "Unknown Hotel")
-            # Google Hotels nests the price, so we safely extract it
-            price = hotel.get("rate_per_night", {}).get("extracted_lowest", 200.0)
-            rating = hotel.get("overall_rating", 0.0)
-            url = hotel.get("link", "https://google.com/travel/hotels")
-            
-            live_hotels.append({
-                "name": name,
-                "price": float(price) if price else 0.0,
-                "rating": float(rating) if rating else 0.0,
-                "url": url
+        data = get_json("https://serpapi.com/search", params=params)
+        hotels = []
+        for hotel in data.get("properties", [])[:6]:
+            if not isinstance(hotel, dict) or not hotel.get("name"):
+                continue
+            url = safe_url(hotel.get("link")) or "https://www.google.com/travel/search?" + urlencode({"q": f"{hotel['name']} {city}"})
+            currency, adults = state.get("currency", "USD"), state.get("adults", 1)
+            evidence = source("Google Hotels via SerpAPI", url, f"{state['destination']}:{hotel['name']}:{state['start_date']}:{state['end_date']}:{currency}:{adults}", "quote")
+            rating = hotel.get("overall_rating")
+            hotels.append({
+                "id": evidence["id"], "name": hotel["name"],
+                "price": price_or_none((hotel.get("rate_per_night") or {}).get("extracted_lowest")),
+                "currency": currency,
+                "price_basis": f"Per night, one shared room; search for {adults} adult(s). Confirm occupancy and taxes",
+                "rating": rating if isinstance(rating, (int, float)) and 0 <= rating <= 5 else None,
+                "source": evidence,
             })
-        
-        if live_hotels:
-            print(f"✅ Live Hotels Found: {len(live_hotels)} options.")
-        else:
-            print("⚠️ No live hotels found for this route/date.")
-            
-        return {"hotel_candidates": live_hotels}
-
-    except Exception as e:
-        print(f"❌ API Error: {e}")
-        return {"hotel_candidates": []}
+        return {"hotel_candidates": hotels, "warnings": [] if hotels else ["No hotel quotes were returned for these dates."]}
+    except ProviderUnavailable as error:
+        return {"hotel_candidates": [], "warnings": [f"Hotel search failed. {error} Other parts of your draft remain available."]}
+    except (TypeError, AttributeError):
+        return {"hotel_candidates": [], "warnings": ["Hotel search failed. Other parts of your draft remain available."]}

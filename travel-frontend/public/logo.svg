@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>AI Travel Planner compass and plane</title>
+  <rect width="64" height="64" rx="16" fill="#176B60"/>
+  <circle cx="32" cy="32" r="23" stroke="#D5E9DF" stroke-width="1.5"/>
+  <path d="M17 39L47 17L36 47L29 35L17 39Z" fill="#FFFDF8"/>
+  <path d="M29 35L47 17" stroke="#176B60" stroke-width="2" stroke-linecap="round"/>
+  <path d="M15 49L20 44M13 42L16 39" stroke="#E7C896" stroke-width="2" stroke-linecap="round"/>
+</svg>
