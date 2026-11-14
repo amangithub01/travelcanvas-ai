@@ -1,6 +1,6 @@
 import os
 
-from planning import destination_location, source
+from planning import attraction_query, destination_location, source
 from providers import ProviderUnavailable, get_json, local_places
 from search_cache import read_cache, write_cache
 from state import TravelState
@@ -13,7 +13,7 @@ def attractions_node(state: TravelState):
         if cached is not None:
             return {"attraction_candidates": cached, "warnings": ["Attraction results were reused from a destination cache. Check the original source timestamps."]}
         try:
-            places = local_places(city, "tourist attractions and landmarks", 9)
+            places = local_places(city, attraction_query(state), 9)
             write_cache(state, "attractions", places)
             return {"attraction_candidates": places, "warnings": [] if places else ["No attractions were returned for this destination."]}
         except ProviderUnavailable as error:
@@ -24,7 +24,12 @@ def attractions_node(state: TravelState):
     if not key:
         return {"attraction_candidates": [], "warnings": ["Attraction search unavailable: configure SerpAPI (recommended) or optional Foursquare."]}
     try:
-        data = get_json("https://api.foursquare.com/v3/places/search", params={"near": city, "categories": "10000", "limit": 9}, headers={"accept": "application/json", "Authorization": key})
+        params = {"near": city, "limit": 9}
+        if state.get("interests"):
+            params["query"] = attraction_query(state)
+        else:
+            params["categories"] = "10000"
+        data = get_json("https://api.foursquare.com/v3/places/search", params=params, headers={"accept": "application/json", "Authorization": key})
         places = []
         for place in data.get("results", []):
             if not place.get("name") or not place.get("fsq_id"):

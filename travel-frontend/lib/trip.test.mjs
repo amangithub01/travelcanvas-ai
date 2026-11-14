@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   calculateBudget, convertAmount, formatMoney, moveActivity, parseTripFile, planSchema,
-  readTrips, scheduleWarnings, STORAGE_KEY, writeTrip,
+  readTrips, requestSchema, scheduleWarnings, STORAGE_KEY, writeTrip,
 } from "./trip.ts";
 
 function fixture() {
@@ -88,12 +88,12 @@ test("moving and reordering keeps IDs and source provenance without mutating ori
 });
 
 test("schedule warnings catch overlaps and day overflow without inventing route durations", () => {
-  const plan = fixture();
-  plan.days[0].activities[0].time = "23:00";
-  plan.days[0].activities[0].duration_minutes = 120;
-  plan.days[0].activities.push({ ...plan.days[0].activities[0], id: "a2", title: "Second", time: "23:30", duration_minutes: null });
+  const plan = moveActivity(planSchema.parse(fixture()), "a1", "d1");
+  plan.days[1].activities[0].time = "23:00";
+  plan.days[1].activities[0].duration_minutes = 120;
+  plan.days[1].activities.push({ ...plan.days[1].activities[0], id: "a2", title: "Second", time: "23:30", duration_minutes: null });
   assert.equal(scheduleWarnings(plan).length, 2);
-  plan.days[0].activities[0].duration_minutes = null;
+  plan.days[1].activities[0].duration_minutes = null;
   assert.equal(scheduleWarnings(plan).length, 0);
 });
 
@@ -195,4 +195,49 @@ test("unavailable conversion stays null and saved exchange rates remain dated sn
   writeTrip(local, trip);
   assert.equal(readTrips(local)[0].request.adults, 3);
   assert.equal(readTrips(local)[0].exchange.rate, 0.012);
+});
+
+test("preferences default on old v1/v2 plans without rewriting storage, and reject unsupported values", () => {
+  const old = fixture();
+  const legacy = planSchema.parse(old);
+  assert.equal(legacy.request.pace, "balanced");
+  assert.deepEqual(legacy.request.interests, []);
+  delete legacy.request.pace;
+  delete legacy.request.interests;
+  const original = JSON.stringify([legacy]);
+  const local = storage({ [STORAGE_KEY]: original });
+  assert.equal(readTrips(local)[0].request.pace, "balanced");
+  assert.deepEqual(readTrips(local)[0].request.interests, []);
+  assert.equal(local.getItem(STORAGE_KEY), original);
+  for (const change of [
+    { pace: "unlimited" }, { interests: ["unknown"] }, { interests: ["nature", "nature"] },
+    { interests: null }, { interests: "food" },
+  ]) {
+    assert.equal(requestSchema.safeParse({ ...old.request, ...change }).success, false);
+    assert.throws(() => parseTripFile(JSON.stringify({ ...legacy, request: { ...legacy.request, ...change } })));
+  }
+});
+
+test("interests and pacing persist through export, import, save and reopen", () => {
+  const plan = planSchema.parse(fixture());
+  plan.request.pace = "packed";
+  plan.request.interests = ["culture", "food", "nature", "shopping"];
+  const copy = parseTripFile(JSON.stringify(plan));
+  const local = storage();
+  writeTrip(local, copy);
+  assert.deepEqual(readTrips(local)[0].request, plan.request);
+});
+
+test("manual edits above pacing guidance are retained and warned, including light travel days", () => {
+  const plan = moveActivity(planSchema.parse(fixture()), "a1", "d1");
+  const day = plan.days[1];
+  day.activities.push(...[2, 3, 4].map(i => ({ ...day.activities[0], id: `a${i}` })));
+  plan.request.pace = "packed";
+  assert.deepEqual(scheduleWarnings(plan), []);
+  plan.request.pace = "relaxed";
+  assert.match(scheduleWarnings(plan)[0], /4 stops exceeds the 2-stop/);
+  assert.equal(parseTripFile(JSON.stringify(plan)).days[1].activities.length, 4);
+  const moved = moveActivity(plan, "a1", "d0");
+  const travelDay = moveActivity(moved, "a2", "d0");
+  assert.match(scheduleWarnings(travelDay)[0], /2 stops exceeds the 1-stop/);
 });

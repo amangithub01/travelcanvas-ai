@@ -1,10 +1,11 @@
 import os
 from threading import BoundedSemaphore
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 
 from planning import safe_url, source
+from staging import ControlError, get_controls, reserve_provider
 
 
 class ProviderUnavailable(Exception):
@@ -18,7 +19,18 @@ def get_json(url, *, params=None, headers=None):
     if not _provider_slots.acquire(timeout=15):
         raise ProviderUnavailable("Provider capacity is busy. Try again later.")
     try:
+        hosts = {
+            "serpapi.com": "serpapi", "api.open-meteo.com": "weather",
+            "api.frankfurter.dev": "exchange", "api.foursquare.com": "foursquare",
+        }
+        provider = hosts.get(urlparse(url).hostname)
+        if provider:
+            reserve_provider(provider)
+        elif get_controls().settings.mode == "staging":
+            raise ControlError("This provider is not permitted by staging controls.")
         return _request_json(url, params=params, headers=headers)
+    except ControlError as error:
+        raise ProviderUnavailable(str(error)) from None
     finally:
         _provider_slots.release()
 

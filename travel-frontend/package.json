@@ -7,9 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test lib/trip.test.mjs"
+    "test": "node --experimental-strip-types --test lib/*.test.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "zod": "^4.1.12",
     "@phosphor-icons/react": "^2.1.10",
     "lucide-react": "^0.577.0",

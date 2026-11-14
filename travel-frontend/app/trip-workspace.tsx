@@ -7,7 +7,7 @@ import {
 } from "@phosphor-icons/react";
 import {
   calculateBudget, convertAmount, formatMoney, ESTIMATE_KEYS, MAX_IMPORT_BYTES, moveActivity, parseTripFile,
-  readTrips, scheduleWarnings, STORAGE_KEY, writeTrip,
+  readTrips, scheduleWarnings, STORAGE_KEY, writeTrip, INTEREST_LABELS, PACE_LIMITS,
   type Activity, type Source, type TripPlan,
 } from "../lib/trip";
 
@@ -34,7 +34,7 @@ function DurationInput({ value, onChange }: { value: number | null; onChange: (v
     onBlur={() => { if (!valid) setText(value === null ? "" : String(value)); }} />;
 }
 
-export function TripWorkspace({ plan, onChange }: { plan: TripPlan; onChange: (plan: TripPlan) => void }) {
+export function TripWorkspace({ plan, onChange, readOnly = false }: { plan: TripPlan; onChange: (plan: TripPlan) => void; readOnly?: boolean }) {
   const [editing, setEditing] = useState(false);
   const budget = calculateBudget(plan);
   const currency = plan.request.currency;
@@ -68,15 +68,16 @@ export function TripWorkspace({ plan, onChange }: { plan: TripPlan; onChange: (p
   return (
     <section className="results alpha-results" aria-labelledby="results-heading">
       <div className="results-heading">
-        <div><p className="eyebrow caption-3"><Check size={16} /> Your editable travel draft</p><h2 className="heading-4" id="results-heading">{plan.title}</h2><p className="caption-2 muted">{plan.request.origin} → {plan.request.destination} · {plan.request.start_date} to {plan.request.end_date}</p></div>
+        <div><p className="eyebrow caption-3"><Check size={16} /> {readOnly ? "Shared read-only travel snapshot" : "Your editable travel draft"}</p><h2 className="heading-4" id="results-heading">{plan.title}</h2><p className="caption-2 muted">{plan.request.origin} → {plan.request.destination} · {plan.request.start_date} to {plan.request.end_date}</p></div>
         <div className="workspace-actions no-print">
-          <button type="button" className="secondary-button button-sm" aria-pressed={editing} onClick={() => setEditing(!editing)}><PencilSimple size={16} />{editing ? "Finish editing" : "Edit itinerary"}</button>
+          {!readOnly && <button type="button" className="secondary-button button-sm" aria-pressed={editing} onClick={() => setEditing(!editing)}><PencilSimple size={16} />{editing ? "Finish editing" : "Edit itinerary"}</button>}
           <button type="button" className="secondary-button button-sm" onClick={() => window.print()}><Printer size={16} />Save as PDF</button>
         </div>
       </div>
       {editing && <label className="field title-4 no-print">Trip name<input className="alpha-input body-5" maxLength={200} value={plan.title} onChange={event => onChange({ ...plan, title: event.target.value })} /></label>}
       <div className="alpha-disclosure panel caption-2">
         {plan.request.adults} {plan.request.adults === 1 ? "adult" : "adults"} · One shared room · {currency} group budget · Draft timing only. Room occupancy, opening hours, transit times, and availability are not verified. Nothing is booked.
+        <p>{plan.request.pace[0].toUpperCase() + plan.request.pace.slice(1)} pace · Up to {PACE_LIMITS[plan.request.pace]} stops per full day; one on arrival/departure days, including food stops. Interests: {plan.request.interests.length ? plan.request.interests.map(interest => INTEREST_LABELS[interest]).join(", ") : "General discovery"}. Search guidance, not verified matches. Manual edits can exceed draft limits.</p>
       </div>
       <details className="plan-warnings panel" open={warnings.some(item => item.includes("unavailable") || item.includes("not configured") || item.includes("exceeds"))}>
         <summary className="title-4">Planning notes and missing data ({warnings.length})</summary>
@@ -94,7 +95,7 @@ export function TripWorkspace({ plan, onChange }: { plan: TripPlan; onChange: (p
               <div><p className="title-4">{line.label}<span className="caption-5 muted"> · {line.kind}</span></p><p className="caption-5 muted">{line.basis}</p></div>
               {ESTIMATE_KEYS.includes(line.key as typeof ESTIMATE_KEYS[number]) ? (
                 <label className="estimate-control no-print"><span className="sr-only">{line.label} whole-trip group estimate in {currency}</span>
-                  <input aria-label={`${line.label} estimate in ${currency}`} className="alpha-input body-5" type="number" step="0.01" min="0" max="100000000" placeholder="Unknown" value={plan.estimates[line.key as typeof ESTIMATE_KEYS[number]] ?? ""}
+                  <input aria-label={`${line.label} estimate in ${currency}`} className="alpha-input body-5" type="number" step="0.01" min="0" max="100000000" placeholder="Unknown" disabled={readOnly} value={plan.estimates[line.key as typeof ESTIMATE_KEYS[number]] ?? ""}
                     onChange={event => {
                       const value = event.target.value === "" ? null : Number(event.target.value);
                       if (value !== null && (!Number.isFinite(value) || value < 0 || value > 100_000_000)) return;
@@ -161,7 +162,7 @@ export function TripWorkspace({ plan, onChange }: { plan: TripPlan; onChange: (p
             <section className="panel detail-card quote-card" key={kind}>
               <h3 className="title-2">{kind === "flights" ? "Flight quotes" : "Stay quotes"}</h3>
               <p className="caption-5 muted">Choose one to include in your budget. Quoted prices are not guaranteed.</p>
-              <label className="field caption-3 no-print">Budget selection<select className="alpha-input body-5" aria-label={kind === "flights" ? "Selected flight" : "Selected stay"} value={(kind === "flights" ? plan.selected_flight_id : plan.selected_hotel_id) || ""} onChange={event => onChange({ ...plan, [kind === "flights" ? "selected_flight_id" : "selected_hotel_id"]: event.target.value || null })}><option value="">Not selected · Unknown cost</option>{plan[kind].map(quote => <option key={quote.id} value={quote.id}>{quote.name}{quote.price !== null ? ` · ${money(quote.price)}` : " · Price unknown"}</option>)}</select></label>
+              <label className="field caption-3 no-print">Budget selection<select className="alpha-input body-5" disabled={readOnly} aria-label={kind === "flights" ? "Selected flight" : "Selected stay"} value={(kind === "flights" ? plan.selected_flight_id : plan.selected_hotel_id) || ""} onChange={event => onChange({ ...plan, [kind === "flights" ? "selected_flight_id" : "selected_hotel_id"]: event.target.value || null })}><option value="">Not selected · Unknown cost</option>{plan[kind].map(quote => <option key={quote.id} value={quote.id}>{quote.name}{quote.price !== null ? ` · ${money(quote.price)}` : " · Price unknown"}</option>)}</select></label>
               {plan[kind].length === 0 && <p className="body-6 muted detail-empty">No quotes available. Check the planning notes; no sample prices have been substituted.</p>}
               {plan[kind].map(quote => {
                 const selected = (kind === "flights" ? plan.selected_flight_id : plan.selected_hotel_id) === quote.id;
@@ -262,7 +263,7 @@ export function TripLibrary({ plan, onLoad, dirty }: { plan: TripPlan | null; on
   return (
     <section className="trip-library panel no-print" aria-labelledby="library-heading">
       <h3 id="library-heading" className="heading-6">My trips <span className="caption-4 muted">{library.trips.length} / 30</span></h3>
-      <p className="caption-2 muted">Local-first alpha. No account or cloud backup. Clearing browser data removes saved trips. Export JSON to share an editable copy; PDF shares a read-only itinerary.</p>
+      <p className="caption-2 muted">These copies stay in this browser, separate from the optional cloud account. Clearing browser data removes them. Export JSON to share an editable copy; PDF shares a read-only itinerary.</p>
       <div className="library-actions">
         <button type="button" className="secondary-button button-sm" disabled={!plan || !!library.error} onClick={save}><FloppyDisk size={16} />Save trip</button>
         <button type="button" className="secondary-button button-sm" disabled={!plan} onClick={download}><DownloadSimple size={16} />Export JSON</button>

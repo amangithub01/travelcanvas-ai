@@ -1,0 +1,93 @@
+name: travelcanvas-staging
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    volumes: [redis-data:/data]
+    networks: [controls]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    environment:
+      RUN_MODE: staging
+      REDIS_URL: redis://redis:6379/0
+      REDIS_KEY_PREFIX: travel-staging
+      SUPABASE_URL: ${SUPABASE_URL:?Set your Supabase HTTPS origin}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:?Set your Supabase publishable key}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:?Configure SerpAPI before staging}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}
+      AI_PROVIDER: ${AI_PROVIDER:-groq}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:1b}
+      FRONTEND_ORIGINS: ${SITE_ORIGIN:?Set the exact frontend origin}
+      TRAVEL_CACHE_PATH: /data/travel_cache.db
+      MAX_ACTIVE_PLANS: ${MAX_ACTIVE_PLANS:-2}
+      INGRESS_PER_MINUTE: ${INGRESS_PER_MINUTE:-60}
+      USER_PLANS_PER_MINUTE: ${USER_PLANS_PER_MINUTE:-2}
+      USER_PLANS_PER_DAY: ${USER_PLANS_PER_DAY:-10}
+      GLOBAL_PLANS_PER_DAY: ${GLOBAL_PLANS_PER_DAY:-50}
+      SERPAPI_DAILY_REQUEST_LIMIT: ${SERPAPI_DAILY_REQUEST_LIMIT:-200}
+      GROQ_DAILY_REQUEST_LIMIT: ${GROQ_DAILY_REQUEST_LIMIT:-50}
+      OLLAMA_DAILY_REQUEST_LIMIT: ${OLLAMA_DAILY_REQUEST_LIMIT:-50}
+      WEATHER_DAILY_REQUEST_LIMIT: ${WEATHER_DAILY_REQUEST_LIMIT:-200}
+      EXCHANGE_DAILY_REQUEST_LIMIT: ${EXCHANGE_DAILY_REQUEST_LIMIT:-100}
+      FOURSQUARE_DAILY_REQUEST_LIMIT: ${FOURSQUARE_DAILY_REQUEST_LIMIT:-50}
+    volumes: [quote-cache:/data]
+    networks: [edge, controls]
+    read_only: true
+    tmpfs: [/tmp]
+    init: true
+    restart: unless-stopped
+    depends_on:
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: travel-frontend
+      args:
+        NEXT_PUBLIC_API_URL: /api
+        NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL:?Set your Supabase HTTPS origin}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:?Set your Supabase publishable key}
+        NEXT_PUBLIC_SITE_URL: ${SITE_ORIGIN:?Set the exact frontend origin}
+    networks: [edge]
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  gateway:
+    image: nginxinc/nginx-unprivileged:stable-alpine
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: ["./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro"]
+    networks: [edge]
+    read_only: true
+    tmpfs: [/tmp]
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+      frontend: {condition: service_healthy}
+
+networks:
+  edge:
+  controls:
+    internal: true
+volumes:
+  redis-data:
+  quote-cache:

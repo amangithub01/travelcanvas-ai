@@ -4,9 +4,10 @@ import Image from "next/image";
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { ArrowRight, CalendarBlank, Compass, MapPin, PaperPlaneTilt, Sparkle, WarningCircle } from "@phosphor-icons/react";
 import { planTrip } from "../lib/api";
-import { DESTINATION_CURRENCIES, requestSchema, type TripPlan, type TripRequest } from "../lib/trip";
+import { DESTINATION_CURRENCIES, INTERESTS, INTEREST_LABELS, PACES, PACE_LIMITS, requestSchema, type TripPlan, type TripRequest } from "../lib/trip";
 import { BentoShowcase, LandingDetails, LandingHero, SampleWorkspace } from "./travel-showcase";
 import { TripLibrary, TripWorkspace } from "./trip-workspace";
+import { CloudAccount } from "./cloud-account";
 
 const AIRPORTS = [
   "Mumbai (BOM)", "Delhi (DEL)", "Hyderabad (HYD)", "Bengaluru (BLR)", "Chennai (MAA)", "Kolkata (CCU)",
@@ -63,7 +64,7 @@ function initialForm(): PlannerForm {
   start.setUTCDate(start.getUTCDate() + 30);
   const end = new Date(start);
   end.setUTCDate(end.getUTCDate() + 3);
-  return { origin: "", destination: "", start_date: start.toISOString().slice(0, 10), end_date: end.toISOString().slice(0, 10), max_price: 50000, currency: "INR", adults: 1 };
+  return { origin: "", destination: "", start_date: start.toISOString().slice(0, 10), end_date: end.toISOString().slice(0, 10), max_price: 50000, currency: "INR", adults: 1, pace: "balanced", interests: [] };
 }
 
 function extractCode(text: string) {
@@ -126,15 +127,18 @@ export default function TravelDashboard() {
       <header className="site-header no-print"><nav className="navigation" aria-label="Main navigation">
         <a href="#planner" className="brand" aria-label="AI Travel Planner home"><Image src="/logo.svg" alt="" width={40} height={40} /><span className="title-3">AI Travel <span className="brand-secondary">Planner</span></span></a>
         <a href="#planner" className="nav-current button-sm" aria-current="page"><Compass size={16} />Trip planner</a>
+        <a href="#cloud-account" className="secondary-button button-sm">Account / Sign up</a>
       </nav></header>
       <main id="main-content" className="page-shell">
         <LandingHero /><BentoShowcase />
         <div className="showcase-heading workspace-section-heading no-print"><div><p className="eyebrow caption-3"><Compass size={16} />The journey workspace</p><h2 className="heading-3">Your ideas, with a little direction.</h2></div><span className="caption-2 muted">Local-first alpha · Save, edit, and share your own plan.</span></div>
         <div className="workspace">
           <aside className="planner-sidebar no-print" id="planner" aria-labelledby="planner-heading">
+            <CloudAccount plan={plan} onLoad={openPlan} />
             <form onSubmit={handleSearch} className="panel planner-form">
               <div className="form-heading"><div className="icon-tile"><PaperPlaneTilt size={24} weight="duotone" /></div><div><h2 id="planner-heading" className="heading-6">Where are we headed?</h2><p className="caption-2 muted">Start with the details. We&apos;ll connect the dots.</p></div></div>
               <p className="planner-scope caption-5 muted">1 to 6 adults · One shared room · 1 to 14 nights.<span>Choose from the 12 supported airports below. Confirm the room can accommodate your group.</span></p>
+              {process.env.NEXT_PUBLIC_REQUIRE_LOGIN === "true" && <p className="caption-2 muted">Protected staging · <a href="#cloud-heading">Sign in to your cloud account</a> before planning. Shared capacity and daily request allowances apply.</p>}
               <datalist id="airport-list">{AIRPORTS.map(airport => <option key={airport} value={airport} />)}</datalist>
               <div className="route-fields">
                 <div className="field"><label className="title-4" htmlFor="origin">Flying from</label><div className="input-wrap"><MapPin size={18} /><input id="origin" name="origin" type="text" list="airport-list" placeholder="Mumbai (BOM)" value={formData.origin} onChange={event => setFormData({ ...formData, origin: event.target.value })} required disabled={loading} className="body-5" /></div></div>
@@ -156,6 +160,22 @@ export default function TravelDashboard() {
                 {currencyNotice && <p className="caption-2 muted" role="status">{currencyNotice}</p>}
                 <p className="caption-5 muted">Quotes and estimates use {formData.currency}. {DESTINATION_CURRENCIES[extractCode(formData.destination)] ? `Destination comparison: ${DESTINATION_CURRENCIES[extractCode(formData.destination)]}.` : "Choose a destination to set the comparison currency."} Reference conversion uses Frankfurter; card fees and future rates may differ.</p>
               </div>
+              <div className="field">
+                <label className="title-4" htmlFor="pace">Your daily pace</label>
+                <select id="pace" name="pace" className="alpha-input body-5" value={formData.pace} disabled={loading} onChange={event => setFormData({ ...formData, pace: event.target.value as TripRequest["pace"] })}>
+                  {PACES.map(pace => <option key={pace} value={pace}>{pace[0].toUpperCase() + pace.slice(1)} · Up to {PACE_LIMITS[pace]} stops per full day</option>)}
+                </select>
+                <p className="caption-5 muted">Arrival and departure: up to one stop each. Food stops count too. These are draft limits, not verified travel times or walking effort.</p>
+              </div>
+              <fieldset className="interest-options" disabled={loading} aria-describedby="interest-help">
+                <legend className="title-4">What do you enjoy? <span className="caption-2 muted">Optional</span></legend>
+                <div className="interest-grid">{INTERESTS.map(interest => <label className="interest-option body-6" key={interest}>
+                  <input type="checkbox" name="interests" value={interest} checked={formData.interests.includes(interest)} onChange={event => setFormData({
+                    ...formData, interests: event.target.checked ? [...formData.interests, interest] : formData.interests.filter(value => value !== interest),
+                  })} />{INTEREST_LABELS[interest]}
+                </label>)}</div>
+                <p id="interest-help" className="caption-5 muted">Guides attraction searches and AI ordering, not guaranteed matches. Leave blank for general discovery. Changes apply to your next generated plan.</p>
+              </fieldset>
               <div className="request-actions"><button className="primary-button button-md" type="submit" disabled={loading}><span>{loading ? "Building your plan" : "Plan my trip"}</span><ArrowRight size={20} /></button>{loading && <button className="secondary-button button-sm" type="button" onClick={() => activeRequest.current?.abort()}>Cancel planning</button>}</div>
               <p className="form-footnote caption-5"><Sparkle size={14} />Unknown costs stay unknown, never invented.</p>
               {pendingRequest && <div className="inline-confirm" role="group" aria-label="Replace open draft"><p className="body-6">A new plan will replace the open draft. Save or export it first if you need to keep it.</p><button className="secondary-button button-sm" type="button" onClick={() => void generate(pendingRequest)}>Replace with new plan</button><button className="secondary-button button-sm" type="button" onClick={() => setPendingRequest(null)}>Keep current draft</button></div>}

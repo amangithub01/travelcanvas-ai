@@ -35,6 +35,22 @@ DESTINATION_CURRENCIES = {
     "MAA": "INR", "CCU": "INR", "DXB": "AED", "JFK": "USD",
     "LHR": "GBP", "CDG": "EUR", "HND": "JPY", "SIN": "SGD",
 }
+INTEREST_QUERIES = {
+    "culture": "museums and historic landmarks",
+    "nature": "parks and gardens",
+    "food": "food markets and culinary attractions",
+    "shopping": "shopping markets and shopping districts",
+}
+PACE_LIMITS = {"relaxed": 2, "balanced": 3, "packed": 4}
+
+
+def activity_limit(state, day, count):
+    return 1 if day in (1, count) else PACE_LIMITS[state.get("pace", "balanced")]
+
+
+def attraction_query(state):
+    interests = sorted(state.get("interests", []))
+    return "tourist attractions and landmarks" if not interests else ", ".join(INTEREST_QUERIES[interest] for interest in interests)
 
 
 def destination_location(code):
@@ -83,6 +99,15 @@ class TripRequest(BaseModel):
     max_price: float = Field(gt=0, le=100_000_000, allow_inf_nan=False)
     currency: Literal["INR", "USD"] = "USD"
     adults: int = Field(default=1, ge=1, le=6, strict=True)
+    pace: Literal["relaxed", "balanced", "packed"] = "balanced"
+    interests: list[Literal["culture", "nature", "food", "shopping"]] = Field(default_factory=list, max_length=4)
+
+    @field_validator("interests")
+    @classmethod
+    def unique_interests(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("Choose each interest only once.")
+        return sorted(value)
 
     @field_validator("origin", "destination")
     @classmethod
@@ -160,9 +185,11 @@ def build_plan(state):
     for index in range((end - start).days + 1):
         day = {"id": str(uuid4()), "date": (start + timedelta(days=index)).isoformat(), "title": f"Day {index + 1}", "activities": []}
         ids = suggested.get(str(index + 1), [])
-        for place_id in ids[:3]:
+        for place_id in ids:
             if place_id not in by_id or place_id in assigned:
                 continue
+            if len(day["activities"]) >= activity_limit(state, index + 1, (end - start).days + 1):
+                break
             place = by_id[place_id]
             assigned.add(place_id)
             day["activities"].append({
@@ -183,7 +210,10 @@ def build_plan(state):
         "Keep arrival and departure days flexible until flight schedules are confirmed.",
         "Quotes are not bookings. Baggage, taxes, meals, transport, and activity costs may be excluded.",
         f"Budget covers {state.get('adults', 1)} adult(s), one shared room, {state.get('currency', 'USD')}, and a round-trip flight search. Confirm room occupancy and the final group fare.",
+        f"{state.get('pace', 'balanced').capitalize()} pacing: up to {PACE_LIMITS[state.get('pace', 'balanced')]} stops on full days and one on arrival/departure days, including food stops. This is a count limit, not a verified time or walking-effort estimate.",
     ]))
+    if state.get("interests"):
+        warnings.append("Interests guide place searches and draft ordering, not verified category matches. Some interests may have no suitable results; no extra places are invented to fill days.")
     budget = budget_for(state, flight, hotel)
     if budget["over_budget"]:
         warnings.append("Even the lowest priced retrieved flight/stay combination exceeds your budget before other expenses.")
@@ -193,7 +223,7 @@ def build_plan(state):
     return {
         "version": 2, "id": str(uuid4()), "title": f"{AIRPORTS[state['destination']][0]} itinerary",
         "created_at": stamp, "updated_at": stamp,
-        "request": {**{key: state[key] for key in ("origin", "destination", "start_date", "end_date", "max_price")}, "currency": state.get("currency", "USD"), "adults": state.get("adults", 1)},
+        "request": {**{key: state[key] for key in ("origin", "destination", "start_date", "end_date", "max_price")}, "currency": state.get("currency", "USD"), "adults": state.get("adults", 1), "pace": state.get("pace", "balanced"), "interests": state.get("interests", [])},
         "days": days, "flights": state.get("flight_candidates", []), "hotels": state.get("hotel_candidates", []),
         "selected_flight_id": flight["id"] if flight else None,
         "selected_hotel_id": hotel["id"] if hotel else None,

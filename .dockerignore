@@ -1,0 +1,5 @@
+**
+!requirements.txt
+!*.py
+!agents/
+!agents/*.py

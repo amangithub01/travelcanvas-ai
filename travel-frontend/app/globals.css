@@ -70,7 +70,7 @@ svg { flex-shrink: 0; }
 .skip-link { position: fixed; top: 8px; left: 16px; z-index: 100; padding: 8px 12px; background: var(--surface); border-radius: 8px; transform: translateY(-150%); }
 .skip-link:focus { transform: translateY(0); }
 .site-header { padding: 16px 24px 0; }
-.navigation { width: fit-content; max-width: 100%; margin: 0 auto; padding: 8px 12px; display: flex; align-items: center; gap: 48px; background: #fffdf8e8; backdrop-filter: blur(16px); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 4px 24px #243b3605; }
+.navigation { width: fit-content; max-width: 100%; margin: 0 auto; padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 16px; background: #fffdf8e8; backdrop-filter: blur(16px); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 4px 24px #243b3605; }
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand-secondary { color: var(--muted); }
 .nav-current { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--accent-soft); color: var(--accent); border-radius: 8px; }

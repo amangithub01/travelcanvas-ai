@@ -10,6 +10,8 @@ class TravelState(TypedDict, total=False):
     max_price: float
     currency: str
     adults: int
+    pace: str
+    interests: list[str]
     bedrooms: int
     min_rating: float
     cached_results: bool

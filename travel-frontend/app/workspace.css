@@ -51,6 +51,17 @@ textarea.alpha-input { resize: vertical; min-height: 80px; }
 .inline-confirm > p { width: 100%; }
 .planner-scope { display: grid; gap: 4px; }
 .request-actions { display: grid; gap: 8px; }
+.interest-options { border: 0; padding: 0; min-width: 0; display: grid; gap: 8px; }
+.interest-options legend { margin-bottom: 8px; }
+.interest-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.interest-option { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.interest-option input { accent-color: var(--accent); flex-shrink: 0; }
+.interest-option:has(input:checked) { background: #edf2e8; border-color: #9bb9a3; }
+.alpha-disclosure > p { margin-top: 8px; }
+.cloud-form { display: grid; gap: 12px; min-width: 0; }
+.account-panel { margin-top: 0; margin-bottom: 24px; scroll-margin-top: 24px; }
+.cloud-identity { overflow-wrap: anywhere; }
+.shared-trip { padding-top: 32px; padding-bottom: 32px; }
 button:disabled { cursor: not-allowed; }
 
 @media (max-width: 600px) {

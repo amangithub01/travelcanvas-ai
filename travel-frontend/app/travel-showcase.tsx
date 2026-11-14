@@ -274,7 +274,7 @@ const questions = [
   { question: "Does this book flights or hotels for me?", answer: "No bookings or payments are made by this planner. Confirm prices, schedules, availability, and terms directly with the provider before booking.", id: "planning-note" },
   { question: "Can I take my itinerary with me?", answer: "Yes. Choose Save as PDF in the workspace to open your browser's print dialog. Select Save as PDF to keep a copy. The planning form and marketing sections are excluded." },
   { question: "Why might a live search return fewer options?", answer: "Availability and connected services can vary. This local installation also needs its backend and provider API keys configured. If a request fails, the planner shows an inline message so you can try again." },
-  { question: "What happens to my trip details?", answer: "The form sends your trip details to the Python backend and connected planning providers. Search quotes use a short-lived local SQLite cache. Saved trips stay only in this browser, with no account or cloud backup. Exported JSON and PDFs contain your trip details and personal notes, so share them carefully.", id: "privacy-note" },
+  { question: "What happens to my trip details?", answer: "Planning sends your trip details to the Python backend and connected providers. Browser saves stay on this device. If cloud accounts are configured, Supabase receives account credentials and trips you explicitly save or publish; signing in does not upload browser trips. Shared snapshot links expose included details to anyone holding the link. Exported JSON and PDFs also include notes, so share carefully.", id: "privacy-note" },
 ];
 
 export function LandingDetails() {

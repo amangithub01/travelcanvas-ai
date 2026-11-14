@@ -4,6 +4,9 @@ __pycache__/
 .env
 venv/
 travel_cache.db
+/deploy/staging.env
+/deploy/vercel.env
+.vercel/
 /research-data/
 .next/
 node_modules/

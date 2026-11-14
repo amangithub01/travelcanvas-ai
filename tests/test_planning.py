@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import tempfile
@@ -68,7 +69,7 @@ class PlanningTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.cache_path = str(Path(self.temp.name) / "cache.db")
-        self.env = patch.dict(os.environ, {"TRAVEL_CACHE_PATH": self.cache_path, "SERPAPI_API_KEY": "test-key", "FOURSQUARE_API_KEY": "test-key", "GROQ_API_KEY": ""})
+        self.env = patch.dict(os.environ, {"TRAVEL_CACHE_PATH": self.cache_path, "SERPAPI_API_KEY": "test-key", "FOURSQUARE_API_KEY": "test-key", "GROQ_API_KEY": "", "AI_PROVIDER": "groq"})
         self.env.start()
         self.client = TestClient(app)
 
@@ -265,6 +266,46 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual([item for day in result["day_place_ids"].values() for item in day], ["known"])
         self.assertTrue(any("no usable" in warning for warning in result["warnings"]))
 
+    def test_local_gemma_uses_schema_and_filters_invented_repeated_and_excess_places(self):
+        places = [{"id": f"p{i}", "name": f"Known place {i}"} for i in range(6)]
+        state = {**trip_request(), "pace": "relaxed", "attraction_candidates": places}
+        response = Mock(status_code=200, content=b"fixture")
+        response.json.return_value = {"message": {"content": json.dumps({"days": [
+            {"day": 1, "place_ids": ["invented", "p0", "p1"]},
+            {"day": 2, "place_ids": ["p0", "p1", "p2", "p3"]},
+            {"day": 4, "place_ids": ["p4", "p5"]},
+        ]})}}
+        with patch.dict(os.environ, {"AI_PROVIDER": "ollama", "OLLAMA_URL": "http://host.docker.internal:11434", "OLLAMA_MODEL": "gemma3:1b"}), patch(
+            "agents.itinerary.requests.post", return_value=response,
+        ) as network, patch("agents.itinerary.ChatGroq") as groq:
+            result = itinerary_node(state)
+        self.assertEqual(result["day_place_ids"], {"1": ["p0"], "2": ["p1", "p2"], "4": ["p4"]})
+        groq.assert_not_called()
+        self.assertFalse(network.call_args.kwargs["allow_redirects"])
+        self.assertEqual(network.call_args.kwargs["json"]["model"], "gemma3:1b")
+        self.assertIn("properties", network.call_args.kwargs["json"]["format"])
+        self.assertEqual(network.call_args.kwargs["json"]["format"]["properties"]["days"]["minItems"], 1)
+
+    def test_local_gemma_rejects_nonlocal_urls_before_any_model_request(self):
+        state = {**trip_request(), "attraction_candidates": [{"id": "known", "name": "Known place"}]}
+        for url in ("https://example.com", "http://localhost:11434/path", "http://user:secret@localhost:11434", "http://localhost:11434?redirect=example.com"):
+            with self.subTest(url=url), patch.dict(os.environ, {"AI_PROVIDER": "ollama", "OLLAMA_URL": url}), patch("agents.itinerary.requests.post") as network:
+                result = itinerary_node(state)
+            network.assert_not_called()
+            self.assertIn("known", str(result["day_place_ids"]))
+            self.assertIn("Local Gemma", str(result["warnings"]))
+            self.assertNotIn("secret", str(result))
+
+    def test_local_gemma_malformed_output_falls_back_without_leaking_model_details(self):
+        state = {**trip_request(), "attraction_candidates": [{"id": "known", "name": "Known place"}]}
+        response = Mock(status_code=200, content=b"fixture")
+        response.json.return_value = {"message": {"content": "private model error"}}
+        with patch.dict(os.environ, {"AI_PROVIDER": "ollama", "OLLAMA_URL": "http://localhost:11434"}), patch("agents.itinerary.requests.post", return_value=response):
+            result = itinerary_node(state)
+        self.assertIn("known", str(result["day_place_ids"]))
+        self.assertIn("Local Gemma", str(result["warnings"]))
+        self.assertNotIn("private model error", str(result))
+
     def test_invalid_request_never_calls_providers(self):
         with patch("providers.requests.get") as network:
             response = self.client.post("/plan-trip", json={**trip_request(), "destination": "BOM"})
@@ -384,7 +425,7 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         plan = response.json()["plan"]
         self.assertEqual(plan["version"], 2)
-        self.assertEqual(plan["request"], request)
+        self.assertEqual(plan["request"], {**request, "pace": "balanced", "interests": []})
         self.assertEqual(plan["budget"]["currency"], "INR")
         self.assertEqual(plan["budget"]["known_total"], 322.85)
         self.assertEqual(plan["exchange"]["base"], "INR")
@@ -458,6 +499,79 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(plan["budget"]["currency"], "INR")
         self.assertEqual(plan["budget"]["known_total"], 322.85)
         self.assertEqual(len(plan["flights"]), 1)
+
+    def test_preferences_validate_before_providers_and_default_for_old_requests(self):
+        parsed = TripRequest(**trip_request())
+        self.assertEqual((parsed.pace, parsed.interests), ("balanced", []))
+        for change in (
+            {"pace": "unlimited"}, {"interests": ["nightlife"]},
+            {"interests": ["nature", "nature"]}, {"interests": "food"},
+            {"interests": None},
+        ):
+            with self.subTest(change=change), patch("providers.requests.get") as network:
+                response = self.client.post("/plan-trip", json={**trip_request(), **change})
+                self.assertEqual(response.status_code, 422)
+                network.assert_not_called()
+
+    def test_interest_search_and_cache_are_order_independent_without_extra_requests(self):
+        request = {**trip_request(), "interests": ["nature", "culture"]}
+        with patch("agents.attractions.local_places", return_value=[{
+            "id": "p", "name": "Park", "source": {"id": "s", "retrieved_at": "2026-11-10T00:00:00Z"},
+        }]) as search:
+            first = attractions_node(request)
+            second = attractions_node({**request, "interests": ["culture", "nature"], "pace": "packed"})
+        self.assertEqual(first["attraction_candidates"], second["attraction_candidates"])
+        search.assert_called_once_with("Delhi, India", "museums and historic landmarks, parks and gardens", 9)
+        self.assertIsNone(read_cache({**request, "interests": ["shopping"]}, "attractions"))
+        self.assertIsNone(read_cache(trip_request(), "attractions"))
+        self.assertEqual(cache_key(request, "restaurants"), cache_key(trip_request(), "restaurants"))
+        self.assertEqual(cache_key(request, "flights"), cache_key(trip_request(), "flights"))
+        with patch.dict(os.environ, {"SERPAPI_API_KEY": ""}), patch("agents.attractions.get_json", return_value={"results": []}) as legacy:
+            attractions_node(request)
+        self.assertEqual(legacy.call_args.kwargs["params"]["query"], "museums and historic landmarks, parks and gardens")
+
+    def test_pacing_caps_ai_fallback_and_plan_builder_without_duplicates_or_fake_times(self):
+        places = [{"id": f"p{i}", "name": f"Place {i}", "source": {"id": f"s{i}"}} for i in range(12)]
+        for pace, cap in (("relaxed", 2), ("balanced", 3), ("packed", 4)):
+            state = {**trip_request(), "pace": pace, "interests": ["nature"], "attraction_candidates": places}
+            output = ItinerarySelection(days=[
+                DaySelection(day=1, place_ids=["p10", "p11", "p10", "p11"]),
+                DaySelection(day=2, place_ids=["p0", "p1", "p2", "p3"]),
+                DaySelection(day=3, place_ids=["p4", "p5", "p6", "p7"]),
+                DaySelection(day=4, place_ids=["p8", "p9"]),
+            ])
+            llm = Mock()
+            llm.with_structured_output.return_value.invoke.return_value = output
+            with self.subTest(pace=pace), patch.dict(os.environ, {"GROQ_API_KEY": "test"}), patch("agents.itinerary.ChatGroq", return_value=llm):
+                ai = itinerary_node(state)
+            self.assertEqual([len(ids) for ids in ai["day_place_ids"].values()], [1, cap, cap, 1])
+            self.assertIn('"interests": ["nature"]', llm.with_structured_output.return_value.invoke.call_args.args[0][1][1])
+            fallback = itinerary_node(state)
+            self.assertEqual([len(ids) for ids in fallback["day_place_ids"].values()], [1, cap, cap, 1])
+            unchecked = {str(day): [place["id"] for place in places] for day in range(1, 5)}
+            plan = build_plan({**state, "day_place_ids": unchecked})
+            self.assertEqual([len(day["activities"]) for day in plan["days"]], [1, cap, cap, 1])
+            activities = [activity for day in plan["days"] for activity in day["activities"]]
+            self.assertEqual(len({activity["source_id"] for activity in activities}), len(activities))
+            self.assertTrue(all(activity["time"] is None and activity["duration_minutes"] is None for activity in activities))
+        short = {**trip_request(), "end_date": (datetime.fromisoformat(trip_request()["start_date"]) + timedelta(days=1)).date().isoformat(), "pace": "packed", "attraction_candidates": places}
+        self.assertEqual([len(ids) for ids in itinerary_node(short)["day_place_ids"].values()], [1, 1])
+
+    def test_personalized_graph_preserves_preferences_and_honest_empty_results(self):
+        request = {**trip_request(), "pace": "relaxed", "interests": ["nature"]}
+        with patch("providers.requests.get", side_effect=provider_response) as network:
+            response = self.client.post("/plan-trip", json=request)
+        self.assertEqual(response.status_code, 200, response.text)
+        plan = response.json()["plan"]
+        self.assertEqual(plan["request"]["pace"], "relaxed")
+        self.assertEqual(plan["request"]["interests"], ["nature"])
+        queries = [(call.kwargs.get("params") or {}).get("q", "") for call in network.call_args_list]
+        self.assertIn("parks and gardens in Delhi, India", queries)
+        self.assertTrue(any("not verified category matches" in warning for warning in plan["warnings"]))
+        with patch.dict(os.environ, {"SERPAPI_API_KEY": "", "FOURSQUARE_API_KEY": "", "TRAVEL_CACHE_PATH": str(Path(self.temp.name) / "empty.db")}), patch("providers.requests.get", side_effect=requests.Timeout()):
+            empty = self.client.post("/plan-trip", json=request).json()["plan"]
+        self.assertEqual(empty["request"]["interests"], ["nature"])
+        self.assertTrue(all(not day["activities"] for day in empty["days"]))
 
 
 if __name__ == "__main__":

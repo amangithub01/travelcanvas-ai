@@ -10,3 +10,4 @@ fastapi
 uvicorn
 requests
 langchain-groq
+redis>=5,<8

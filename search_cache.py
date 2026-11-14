@@ -6,7 +6,9 @@ from contextlib import contextmanager
 
 
 def cache_key(state, kind):
-    if kind in ("restaurants", "attractions"):
+    if kind == "attractions":
+        return json.dumps([2, kind, state["destination"], "google_local", sorted(state.get("interests", []))])
+    if kind == "restaurants":
         return json.dumps([1, kind, state["destination"], "google_local"])
     return json.dumps([2, kind, state["origin"], state["destination"], state["start_date"], state["end_date"], state.get("currency", "USD"), state.get("adults", 1), 1])
 

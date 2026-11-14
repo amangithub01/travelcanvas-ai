@@ -2,6 +2,10 @@ import { z } from "zod";
 
 export const AIRPORT_CODES = ["BOM", "DEL", "HYD", "BLR", "MAA", "CCU", "DXB", "JFK", "LHR", "CDG", "HND", "SIN"] as const;
 export const ESTIMATE_KEYS = ["meals", "transport", "activities", "taxes", "contingency"] as const;
+export const PACES = ["relaxed", "balanced", "packed"] as const;
+export const PACE_LIMITS = { relaxed: 2, balanced: 3, packed: 4 } as const;
+export const INTEREST_LABELS = { culture: "Culture & history", nature: "Nature", food: "Food", shopping: "Shopping" } as const;
+export const INTERESTS = ["culture", "nature", "food", "shopping"] as const;
 export const CURRENCIES = ["INR", "USD", "AED", "GBP", "EUR", "JPY", "SGD"] as const;
 export const DESTINATION_CURRENCIES: Record<string, typeof CURRENCIES[number]> = {
   BOM: "INR", DEL: "INR", HYD: "INR", BLR: "INR", MAA: "INR", CCU: "INR",
@@ -25,6 +29,8 @@ export const requestSchema = z.object({
   max_price: amount.positive(),
   currency: budgetCurrency.default("USD"),
   adults: z.number().int().min(1).max(6).default(1),
+  pace: z.enum(PACES).default("balanced"),
+  interests: z.array(z.enum(INTERESTS)).max(4).refine(values => new Set(values).size === values.length, "Choose each interest only once.").default([]),
 }).refine(value => value.currency !== "USD" || value.max_price <= 1_000_000, "USD budgets must not exceed 1,000,000.")
   .refine(value => value.origin !== value.destination, "Choose different airports.")
   .refine(value => {
@@ -193,7 +199,9 @@ export function convertAmount(value: number, exchange: TripPlan["exchange"]) {
 
 export function scheduleWarnings(plan: TripPlan) {
   const warnings: string[] = [];
-  for (const day of plan.days) {
+  for (const [index, day] of plan.days.entries()) {
+    const limit = index === 0 || index === plan.days.length - 1 ? 1 : PACE_LIMITS[plan.request.pace];
+    if (day.activities.length > limit) warnings.push(`${day.date}: ${day.activities.length} stops exceeds the ${limit}-stop draft guideline. Your edits are kept; check whether this day is realistic.`);
     const timed = day.activities.filter(activity => activity.time).map(activity => ({
       ...activity,
       start: Number(activity.time!.slice(0, 2)) * 60 + Number(activity.time!.slice(3)),
